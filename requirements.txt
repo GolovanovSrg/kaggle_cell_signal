@@ -1,0 +1,5 @@
+albumentations
+tqdm
+torch
+pretrainedmodels
+attrdict
