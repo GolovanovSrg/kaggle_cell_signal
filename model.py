@@ -76,7 +76,10 @@ class Encoder(nn.Module):
             assert False
 
         # TODO: change activation
-        self.norm = nn.BatchNorm2d(in_channels, in_channels, affine=False)
+        self.register_buffer('mean', torch.tensor([6.74696984, 14.74640167, 10.51260864,
+                                                   10.45369445,  5.49959796, 9.81545561]).view(1, -1, 1, 1) / 255)
+        self.register_buffer('std', torch.tensor([7.95876312, 12.17305868, 5.86172946,
+                                                  7.83451711, 4.701167, 5.43130431]).view(1, -1, 1, 1) / 255)
         if in_channels != 3:
             self.model.layer0[0] = nn.Conv2d(in_channels, self.model.layer0[0].out_channels, kernel_size=7,
                                              stride=2, padding=3, bias=False)
@@ -87,14 +90,14 @@ class Encoder(nn.Module):
         #self.weight = nn.Parameter(torch.Tensor(num_classes, self.model.last_linear.in_features))
         #nn.init.xavier_uniform_(self.weight)
         #self.margin = ArcMarginProduct(self.model.last_linear.in_features, num_classes)
-        self.model.last_linear = nn.Linear(self.model.last_linear.in_features, self.model.last_linear.in_features)
+        self.model.last_linear = nn.Linear(self.model.last_linear.in_features, num_classes)
         self.out_proj = nn.Sequential(nn.Conv2d(self.model.layer4[-1].conv3.out_channels, out_channels, kernel_size=3, padding=1),
-                                      nn.Tanh())
+                                      nn.Sigmoid())
 
         self.scale = scale
 
     def forward(self, x, label=None):
-        x = self.norm(x)
+        x = (x - self.mean) / self.std
         
         x = self.model.features(x)
         out = self.out_proj(x)
@@ -111,6 +114,7 @@ class Decoder(nn.Module):
                  n_channels=[512, 256, 128, 64, 64],
                  activation=nn.ReLU(inplace=True)):
         super().__init__()
+        self.num_classes = num_classes
         # TODO: insert class embedding for each layer
         self.cls_embedding = nn.Embedding(num_classes, in_channels)
 
@@ -132,7 +136,7 @@ class Decoder(nn.Module):
                                       nn.Sigmoid())
 
     def forward(self, x, y):
-        emb = self.cls_embedding(y)
+        emb = F.sigmoid(self.cls_embedding(y))
         x = x + emb.unsqueeze(-1).unsqueeze(-1)
         x = self.layers(x)
         out = self.out_proj(x)

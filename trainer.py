@@ -42,6 +42,7 @@ class Trainer:
         self.device = torch.device('cuda:' + str(rank))
         self.encoder = encoder.to(self.device)
         self.decoder = decoder.to(self.device)
+        self.num_classes = self.decoder.num_classes
         self.mse_critetion = nn.MSELoss()
         self.ce_criterion = nn.CrossEntropyLoss()
 
@@ -85,10 +86,10 @@ class Trainer:
             images = images.to(self.device)
             labels = labels.to(self.device)
 
-            latents, label_preds = self.encoder(images, labels)
+            latents, label_preds = self.encoder(images)
             reconsts_l = self.decoder(latents, labels)
             latents_l, label_preds_l = self.encoder(reconsts_l)
-            labels_r = labels[torch.randperm(len(labels))]
+            labels_r = torch.randint_like(labels, low=0, high=self.num_classes)
             reconsts_r = self.decoder(latents, labels_r)
             latents_r, label_preds_r = self.encoder(reconsts_r)
 

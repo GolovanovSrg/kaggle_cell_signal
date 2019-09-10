@@ -25,7 +25,7 @@ def main(args):
     with open(args.config_path, 'r') as file:
         config = AttrDict(json.load(file))
 
-    set_seed(config.seed)
+    set_seed(config.seed + args.local_rank)
 
     train_data_csv, test_data_csv = train_test_split(config.train_data_csv_path, config.n_test_experiments)
     
@@ -34,7 +34,7 @@ def main(args):
     train_dataset = CellsDataset(config.train_images_dir, train_image_ids, train_labels, train_transform)
     
     test_image_ids, test_labels = get_data(test_data_csv, is_train=True)
-    test_dataset = CellsDataset(config.train_images_dir, test_image_ids, test_labels)
+    test_dataset = CellsDataset(config.train_images_dir, test_image_ids, test_labels, train_transform)
 
     if torch.distributed.get_rank() == 0:
         print(f'Train size: {len(train_dataset)}, test_size: {len(test_dataset)}')
