@@ -83,16 +83,15 @@ class Trainer:
 
         self.device = torch.device('cuda:' + str(rank))
         self.encoder = encoder.to(self.device)
-        self.decoder = decoder.to(self.device)
-        self.num_classes = self.decoder.num_classes
+        #self.decoder = decoder.to(self.device)
+        self.num_classes = decoder.num_classes
         self.mse_critetion = nn.L1Loss()
-        self.ce_criterion = LabelSmoothingLoss(self.num_classes, reduction='none')
+        self.ce_criterion = LabelSmoothingLoss(self.num_classes, smoothing=0.1, reduction='none').to(self.device)
         self.vat_criterion = VATLoss()
         self.cutmix = CutMix(self.num_classes)
 
-        # TODO: remove wd for bn
-        param_optimizer = list(self.encoder.named_parameters()) + list(self.decoder.named_parameters())
-        no_decay = ['bias']
+        param_optimizer = list(self.encoder.named_parameters()) #+ list(self.decoder.named_parameters())
+        no_decay = ['bn', 'bias']
         optimizer_grouped_parameters = [{'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': weight_decay},
                                         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}]
 
@@ -103,10 +102,10 @@ class Trainer:
         [self.encoder], self.optimizer = apex.amp.initialize([self.encoder], self.optimizer,
                                                              opt_level=opt_level, loss_scale=loss_scale, verbosity=1)
 
-        self.scheduler = StepLR(self.optimizer, step_size=100, gamma=0.5)
+        self.scheduler = StepLR(self.optimizer, step_size=20, gamma=0.5)
 
         self.encoder = apex.parallel.DistributedDataParallel(self.encoder, delay_allreduce=True)
-        self.decoder = apex.parallel.DistributedDataParallel(self.decoder, delay_allreduce=True)
+        #self.decoder = apex.parallel.DistributedDataParallel(self.decoder, delay_allreduce=True)
 
         self.last_epoch = 0
         self.n_jobs = n_jobs
@@ -117,7 +116,7 @@ class Trainer:
                         total=len(train_dataloader))
 
         self.encoder.train()
-        self.decoder.train()
+        #self.decoder.train()
 
         sum_loss, cls_loss = AvgMeter(), AvgMeter()
         for images, labels in train_dataloader:
@@ -145,7 +144,7 @@ class Trainer:
             #loss_e = self.ce_criterion(label_preds_r, labels_r)
             #loss_i = self.mse_critetion(latents_l, latents_r)
             
-            losses = loss_c# + loss_r + loss_e + loss_i
+            losses = loss_c #+ loss_vat # + loss_r + loss_e + loss_i
 
             with apex.amp.scale_loss(losses, self.optimizer) as scaled_loss:
                 scaled_loss.backward()

@@ -12,10 +12,13 @@ from torch.utils.data import Dataset
 
 class TrainTransform:
     def __init__(self, crop_size=(256, 256)):
-        self.transform = alb.Compose([alb.RandomCrop(*crop_size),
+        self.transform = alb.Compose([alb.Rotate(limit=90, p=0.5),
+                                      alb.RandomSizedCrop(min_max_height=(int(0.8 * crop_size[0]), int(1.2 * crop_size[0])),
+                                                          height=crop_size[0], width=crop_size[1]),
                                       alb.RandomRotate90(p=0.5),
                                       alb.VerticalFlip(p=0.5),
-                                      alb.HorizontalFlip(p=0.5)])
+                                      alb.HorizontalFlip(p=0.5),
+                                      alb.Cutout(num_holes=8, max_h_size=8, max_w_size=8)])
 
     def __call__(self, image):
         return self.transform(image=image)['image']
@@ -44,9 +47,14 @@ class CellsDataset(Dataset):
     def __getitem__(self, idx):
         image_id = self.image_ids[idx]
         image = CellsDataset._load_image(self.image_dir, image_id)
+
+        mean = np.mean(image.astype('float32'), axis=(0, 1))
+        std = np.std(image.astype('float32'), axis=(0, 1))
+
         if self.transform is not None:
             image = self.transform(image)
-        image = image.astype('float32') / 255
+
+        image = (image.astype('float32') - mean) / (std * 255)
         label = self.labels[idx]
 
         image = torch.from_numpy(np.transpose(image, (2, 0, 1))).float()

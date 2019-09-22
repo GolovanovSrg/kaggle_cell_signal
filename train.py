@@ -41,6 +41,11 @@ def main(args):
 
     encoder = Encoder(config.n_image_channels, config.n_emedding_channels, config.n_classes,
                       config.encoder_model, config.encoder_pretrained, config.encoder_dropout, config.encoder_scale)
+    
+    if config.restore_checkpoint_path is not None:
+        state_dict = torch.load(config.restore_checkpoint_path, map_location='cpu')
+        encoder.load_state_dict(state_dict)
+    
     decoder = Decoder(config.n_emedding_channels, config.n_image_channels, config.n_classes,
                       config.decoder_n_channels)
 

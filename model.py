@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from pretrainedmodels import se_resnext50_32x4d, se_resnext101_32x4d
+from pretrainedmodels import se_resnext50_32x4d, se_resnext101_32x4d, senet154
 
 
 class GaussianNoise(nn.Module):
@@ -22,27 +22,31 @@ class GaussianNoise(nn.Module):
         return x
 
 
-class MoS(nn.Module):
-    def __init__(self, in_feature, out_feature, middle_feature=None, scale=64, n_softmax=1, dropout=0):
+class MoSLayer(nn.Module):
+    def __init__(self, in_feature, out_feature, middle_feature=None, prior_feature=None, activation=nn.CELU(inplace=True),
+                 scale=64, n_softmax=1, dropout=0):
         super().__init__()
 
         if middle_feature is None:
             middle_feature = in_feature
 
+        if prior_feature is None:
+            prior_feature = in_feature
+
         self.scale = scale
         self.n_softmax = n_softmax
         self.latent = nn.Linear(in_feature, n_softmax * middle_feature)
-        self.prior = nn.Linear(in_feature, n_softmax, bias=False)
-        self.weight = nn.Parameter(torch.Tensor(out_feature, middle_feature))
+        self.prior = nn.Sequential(nn.Linear(in_feature, prior_feature), activation, nn.Linear(prior_feature, n_softmax))
+        self.weight = nn.Parameter(torch.Tensor(1, n_softmax, middle_feature, out_feature))
         self.dropout = nn.Dropout(dropout)
 
         nn.init.xavier_uniform_(self.weight)
 
     def forward(self, x):
-        latent = self.latent(x).view(x.shape[0], self.n_softmax, -1)
+        latent = self.latent(x).view(x.shape[0], self.n_softmax, 1, -1)
         latent = self.dropout(latent)
 
-        logit = self.scale * F.linear(F.normalize(latent, dim=-1), F.normalize(self.weight, dim=-1))
+        logit = self.scale * torch.matmul(F.normalize(latent, dim=-1), F.normalize(self.weight, dim=2)).squeeze(2)
         log_p = F.log_softmax(logit, dim=-1)
 
         prior_logit = self.prior(x)
@@ -53,14 +57,44 @@ class MoS(nn.Module):
         return out
 
 
-class ArcMarginProduct(nn.Module):
-    def __init__(self, in_feature, out_feature, scale_size=64.0, m=0.5, easy_margin=False):
+class DistanceLayer(nn.Module):
+    def __init__(self, in_feature, out_feature, middle_feature=None, n_centers=1, scale=64, dropout=0):
         super().__init__()
+
+        if middle_feature is None:
+            middle_feature = in_feature
+
+        self.scale = scale
+        self.proj = nn.Linear(in_feature, middle_feature)
+        self.weight = nn.Parameter(torch.Tensor(out_feature * n_centers, middle_feature))
+        self.max_pool = nn.MaxPool1d(kernel_size=n_centers, stride=n_centers)
+        self.dropout = nn.Dropout(dropout)
+
+        nn.init.xavier_uniform_(self.weight)
+
+    def forward(self, x):
+        x = self.proj(x)
+        x = self.dropout(x)
+        out = self.scale * F.linear(F.normalize(x), F.normalize(self.weight))
+        out = self.max_pool(out.unsqueeze(1)).squeeze(1)
+        out = F.log_softmax(out, dim=-1)
+
+        return out
+
+
+class ArcMarginProduct(nn.Module):
+    def __init__(self, in_feature, out_feature, middle_feature=None, scale_size=64.0, m=0.5, easy_margin=False):
+        super().__init__()
+
+        if middle_feature is None:
+            middle_feature = in_feature
+
         self.in_feature = in_feature
         self.out_feature = out_feature
         self.s = scale_size
         self.m = m
-        self.weight = nn.Parameter(torch.Tensor(out_feature, in_feature))
+        self.proj = nn.Linear(in_feature, middle_feature)
+        self.weight = nn.Parameter(torch.Tensor(out_feature, middle_feature))
         nn.init.xavier_uniform_(self.weight)
 
         self.easy_margin = easy_margin
@@ -72,6 +106,8 @@ class ArcMarginProduct(nn.Module):
         self.mm = math.sin(math.pi - m) * m
 
     def forward(self, x, label):
+        x = self.proj(x)
+
         # cos(theta)
         cosine = F.linear(F.normalize(x), F.normalize(self.weight))
         cosine = cosine.clamp(-1, 1)
@@ -97,12 +133,23 @@ class ArcMarginProduct(nn.Module):
         return output
 
 
-def fix_relu(model):
+def replace_relu(model):
     for child_name, child in model.named_children():
         if isinstance(child, nn.ReLU):
-            setattr(model, child_name, nn.ReLU())
+            setattr(model, child_name, nn.CELU(inplace=True))
         else:
-            fix_relu(child)
+            replace_relu(child)
+
+
+class CatPool2d(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+
+    def forward(self, x):
+        return torch.cat([self.avg_pool(x), self.max_pool(x)], dim=1)
 
 
 class Encoder(nn.Module):
@@ -110,23 +157,22 @@ class Encoder(nn.Module):
                  pretrained=False, dropout=0, scale=64):
         super().__init__()
 
-        assert model in ['seresnext50', 'seresnext101']
+        assert model in ['seresnext50', 'seresnext101', 'senet154']
 
-        # TODO: add Bag of Tricks
         pretrained_dataset = 'imagenet' if pretrained else None
         if model == 'seresnext50':
             self.model = se_resnext50_32x4d(pretrained=pretrained_dataset)
+            inplanes = 64
         elif model == 'seresnext101':
             self.model = se_resnext101_32x4d(pretrained=pretrained_dataset)
+            inplanes = 64
+        elif model == 'senet154':
+            self.model = senet154(pretrained=pretrained_dataset)
+            inplanes = 128
         else:
             assert False
 
-        # TODO: change activation
-        self.register_buffer('mean', torch.tensor([6.74696984, 14.74640167, 10.51260864,
-                                                   10.45369445,  5.49959796, 9.81545561]).view(1, -1, 1, 1) / 255)
-        self.register_buffer('std', torch.tensor([7.95876312, 12.17305868, 5.86172946,
-                                                  7.83451711, 4.701167, 5.43130431]).view(1, -1, 1, 1) / 255)
-    
+
         layer0_modules = [
             ('conv1', nn.Conv2d(in_channels, 64, 3, stride=2, padding=1, bias=False)),
             ('bn1', nn.BatchNorm2d(64)),
@@ -136,40 +182,36 @@ class Encoder(nn.Module):
             ('bn2', nn.BatchNorm2d(64)),
             ('relu2', nn.ReLU(inplace=True)),
 
-            ('conv3', nn.Conv2d(64, 64, 3, stride=1, padding=1,bias=False)),
-            ('bn3', nn.BatchNorm2d(64)),
+            ('conv3', nn.Conv2d(64, inplanes, 3, stride=1, padding=1, bias=False)),
+            ('bn3', nn.BatchNorm2d(inplanes)),
             ('relu3', nn.ReLU(inplace=True)),
 
-            ('pool', nn.MaxPool2d(3, stride=2, ceil_mode=True)),
-            ('dropout', nn.Dropout2d(dropout, inplace=True))
+            ('pool', nn.MaxPool2d(3, stride=2, ceil_mode=True))
         ]
 
         self.model.layer0 = nn.Sequential(OrderedDict(layer0_modules))
-        self.model.avg_pool = nn.Sequential(nn.AdaptiveAvgPool2d(1),
-                                            nn.Flatten(),)
-                                            #nn.BatchNorm1d(self.model.last_linear.in_features),
-                                            #nn.Dropout(dropout, inplace=True))
-        self.weight = nn.Parameter(torch.Tensor(num_classes, self.model.last_linear.in_features))
-        nn.init.xavier_uniform_(self.weight)
+        self.model.avg_pool = nn.Sequential(CatPool2d(),
+                                            GaussianNoise(),
+                                            nn.Flatten())
+
+        #self.dist = DistanceLayer(self.model.last_linear.in_features, num_classes, middle_feature=None, scale=64, n_centers=5, dropout=0)
         #self.margin = ArcMarginProduct(self.model.last_linear.in_features, num_classes)
-        #self.mos = MoS(self.model.last_linear.in_features, num_classes, middle_feature=1024, scale=64, n_softmax=15, dropout=0.2)
-        self.model.last_linear = nn.Linear(self.model.last_linear.in_features, self.model.last_linear.in_features)
+        self.mos = MoSLayer(2 * self.model.last_linear.in_features, num_classes, middle_feature=512, prior_feature=1024, scale=64, n_softmax=10, dropout=0)
+        self.model.last_linear = nn.Identity()
+        replace_relu(self.model)
         #self.out_proj = nn.Sequential(nn.Conv2d(self.model.layer4[-1].conv3.out_channels, out_channels, kernel_size=3, padding=1),
         #                              nn.Sigmoid())
 
         self.scale = scale
 
     def forward(self, x, label=None):
-        #x = (x - self.mean) / self.std
-        
         x = self.model.features(x)
         #out = self.out_proj(x)
 
         y = self.model.logits(x)
-        #y = self.mos(y)  # log_softmax
+        y = self.mos(y)  # log_softmax
         #y = self.margin(y, label)
-        y = self.scale * F.linear(F.normalize(y), F.normalize(self.weight))
-        y = F.log_softmax(y, dim=-1)
+        #y = self.dist(y)  # log_softmax
 
         return y
 
