@@ -44,7 +44,7 @@ def main(args):
     
     if config.restore_checkpoint_path is not None:
         state_dict = torch.load(config.restore_checkpoint_path, map_location='cpu')
-        encoder.load_state_dict(state_dict)
+        encoder.load_state_dict(state_dict, strict=False)
     
     decoder = Decoder(config.n_emedding_channels, config.n_image_channels, config.n_classes,
                       config.decoder_n_channels)

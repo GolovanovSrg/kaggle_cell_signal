@@ -50,12 +50,12 @@ class LabelSmoothingLoss(nn.Module):
 
 def _l2_normalize(d):
     d_reshaped = d.view(d.shape[0], -1, *(1 for _ in range(d.dim() - 2)))
-    d /= torch.norm(d_reshaped, dim=1, keepdim=True) + 1e-8
+    d /= torch.norm(d_reshaped, dim=1, keepdim=True) + 1e-12
     return d
 
 
 class VATLoss(nn.Module):
-    def __init__(self, xi=1, eps=1.0, ip=1):
+    def __init__(self, xi=0.1, eps=0.1, ip=1):
         """
         VAT loss: https://github.com/lyakaap/VAT-pytorch
         :param xi: hyperparameter of VAT (default: 10.0)
@@ -68,15 +68,15 @@ class VATLoss(nn.Module):
         self.ip = ip
 
     def forward(self, model, x):
-        with torch.no_grad():
-            #pred = F.softmax(model(x), dim=1)
-            pred = torch.exp(model(x))
-
-        # prepare random unit tensor
-        d = torch.randn_like(x)
-        d = _l2_normalize(d)
-
         with disable_tracking_bn_stats(model):
+            with torch.no_grad():
+                #pred = F.softmax(model(x), dim=1)
+                pred = torch.exp(model(x))
+
+            # prepare random unit tensor
+            d = torch.rand_like(x) - 0.5
+            d = _l2_normalize(d)
+
             # calc adversarial direction
             for _ in range(self.ip):
                 d.requires_grad_()
@@ -89,8 +89,9 @@ class VATLoss(nn.Module):
 
             # calc LDS
             r_adv = d * self.eps
-            pred_hat = model(x + r_adv)
+            pred_hat = model((x + r_adv).detach())
             logp_hat = pred_hat  # F.log_softmax(pred_hat, dim=1)
             lds = F.kl_div(logp_hat, pred, reduction='batchmean')
+            lds = lds - (torch.exp(logp_hat) * logp_hat).sum(dim=1).mean()
 
         return lds

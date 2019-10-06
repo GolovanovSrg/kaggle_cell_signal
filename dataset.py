@@ -33,8 +33,9 @@ class CellsDataset(Dataset):
         
         return image
 
-    def __init__(self, image_dir, image_ids, labels, transform=None):
-        assert len(image_ids) == len(labels)
+    def __init__(self, image_dir, image_ids, labels=None, transform=None):
+        if labels is not None:
+            assert len(image_ids) == len(labels)
 
         self.image_dir = image_dir
         self.image_ids = image_ids
@@ -55,9 +56,12 @@ class CellsDataset(Dataset):
             image = self.transform(image)
 
         image = (image.astype('float32') - mean) / (std * 255)
-        label = self.labels[idx]
-
         image = torch.from_numpy(np.transpose(image, (2, 0, 1))).float()
+
+        if self.labels is None:
+            return image
+
+        label = self.labels[idx]
         label = torch.tensor(label).long()
         
         return image, label

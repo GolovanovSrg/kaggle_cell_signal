@@ -168,6 +168,7 @@ class Encoder(nn.Module):
             inplanes = 64
         elif model == 'senet154':
             self.model = senet154(pretrained=pretrained_dataset)
+            self.model.dropout = nn.Identity()
             inplanes = 128
         else:
             assert False
